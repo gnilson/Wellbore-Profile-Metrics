@@ -4,6 +4,11 @@ from PyQt4.QtCore import *
 from PyQt4.QtGui import *
 
 from numpy import arange
+from numpy import linspace
+from numpy import array
+from numpy import where
+from numpy import polyfit
+from numpy import poly1d
 
 import matplotlib
 from matplotlib.backends.backend_qt4agg import FigureCanvasQTAgg as FigureCanvas
@@ -17,26 +22,52 @@ import numpy.random
 import math
 import csv
 
-xdata = []
-ydata = []
+
+from scipy import interpolate
+from scipy import cluster
+
+
+# CALCULATE:
+# Average inclination
+# Straitness Index
+# 
+
+
+well_list = []  
+well_names = [] # well name <--> UWI
 
 class AppForm(QMainWindow):
     def __init__(self, parent=None):
         QMainWindow.__init__(self, parent)
         self.setWindowTitle('Demo: PyQt with matplotlib')
 
-
         self.create_menu()
         self.create_main_frame()
         self.create_status_bar()
 
+	self.xdata = []
+	self.ydata = []
+	self.dev_data = []
+	self.md_data = []
+
         #self.textbox.setText('1 2 3 4')
         self.on_draw()
 
-
     def on_press(self):
-	print "boo"
 	return
+
+    def well_selected(self, ind):
+	print "Well Selected", well_list[ind.row()], well_names[well_list[ind.row()]] 
+
+	self.xdata = master_dict[well_names[well_list[ind.row()]]]['Deviation N/S']
+	self.ydata = master_dict[well_names[well_list[ind.row()]]]['TV Depth']
+	self.dev_data = array(master_dict[well_names[well_list[ind.row()]]]['Deviation Angle'])
+	self.md_data = master_dict[well_names[well_list[ind.row()]]]['Measured Depth']
+
+	self.on_draw()
+
+	return
+
 
     def save_plot(self):
         file_choices = "PNG (*.png)|*.png"
@@ -59,12 +90,70 @@ class AppForm(QMainWindow):
          * Click on a bar to receive an informative message
         """
         QMessageBox.about(self, "About the demo", msg.strip())
-    
+
+    def sort_by_straitness(self):
+
+	fd = open('out.csv','w')
+	print "API, STRAITNESS RATIO, ANGLE"
+	fd.write("API, STRAITNESS RATIO, ANGLE\n")
+	 
+	for well in master_dict.keys():
+	    
+	    self.xdata = master_dict[well]['Deviation N/S']
+	    self.ydata = master_dict[well]['TV Depth']
+	    self.dev_data = array(master_dict[well]['Deviation Angle'])
+	    self.md_data = master_dict[well]['Measured Depth']
+
+	    if self.xdata:
+		try:
+
+		    centroid, label = cluster.vq.kmeans2(self.dev_data, 3)
+		    ct = centroid[label[-1]]
+		    x0 = where(self.dev_data >= ct)[0][0]
+
+		    #x0 = where(self.dev_data > 70)[0][0]
+		    targ_x = self.xdata[x0:]
+		    targ_y = self.ydata[x0:]
+
+
+		    lin_int = poly1d(polyfit(targ_x, targ_y, 1))
+		    xs = [self.xdata[x0], self.xdata[-1]]
+		    out = lin_int(xs)
+		    stlen = ((out[-1]-out[0])**2.0 + (xs[-1]-xs[0])**2.0)**0.5
+		    angle = -1*math.atan((out[-1]-out[0])/(abs(xs[-1]-xs[0]))*360/(2*math.pi))
+
+		    tcknot, u = interpolate.splprep([self.xdata, self.ydata],
+						    u=self.md_data,
+						    s=0,
+						    k=3)
+		    mds = linspace(min(u), max(u), 5000)
+		    out = interpolate.splev(mds, tcknot)
+		    mds = linspace(self.md_data[x0], self.md_data[-1], 5000)
+		    out = interpolate.splev(mds, tcknot)
+
+		    splen = 0.0
+		    for i in arange(0, len(out[0])-1):
+			splen += ((out[0][i+1] - out[0][i])**2.0 + (out[1][i+1] - out[1][i])**2.0) ** 0.5
+		 
+		    print "%s, %s, %s" %(well, (1-stlen/splen)*1000, angle)
+		    fd.write("%s, %s, %s\n" %(well, (1-stlen/splen)*1000, angle))
+		    
+		except SystemError:
+		    print "%s, ERROR, ERROR" % (well,)
+		    fd.write("%s, ERROR, ERROR\n" % (well,))
+		    pass
+
+	fd.close()
+	print "WELLBORE DATA WRITTEN TO out.csv"
+
+	return
+
         
     def on_draw(self):
         """ Redraws the figure
         """
 
+	print "on_draw"
 	self.axes.clear()
         #self.title.set_text(self.wellname)
 	self.axes.set_picker(1)
@@ -81,12 +170,57 @@ class AppForm(QMainWindow):
         self.axes.xaxis.grid(True, which="both", ls='-', color='#C0C0C0')
         self.axes.grid(True) 
 
-	#((self.well_prod[i+1]/self.dydx[i+1])-(self.well_prod[i+1]/self.dydx[i-1]))/(self.time[i+1]-self.time[i-1])
+	if self.xdata:
 
-	#line, = self.axes.plot(self.time, self.well_prod, 'o', markersize=5, markeredgewidth=0.3)
-	self.axes.plot(xdata, ydata, '-', color='green')
 
-	
+	    #############
+	    #K-MEANS
+	    centroid, label = cluster.vq.kmeans2(self.dev_data, 3)
+	    ct = centroid[label[-1]]
+	    #x0 = where(label == label[-1])[0][0]
+
+	    #############
+	    x0 = where(self.dev_data >= ct)[0][0]
+	    targ_x = self.xdata[x0:]
+	    targ_y = self.ydata[x0:]
+
+	    lin_int = poly1d(polyfit(targ_x, targ_y, 1))
+	    xs = [self.xdata[x0], self.xdata[-1]]
+	    out = lin_int(xs)
+	    self.axes.plot(xs, out, '-', color='red')
+
+	    stlen = ((out[-1]-out[0])**2.0 + (xs[-1]-xs[0])**2.0)**0.5
+	    print "STRAIT_LENGTH", stlen
+	    angle = -1*math.atan((out[-1]-out[0])/(abs(xs[-1]-xs[0]))*360/(2*math.pi))
+
+	    tcknot, u = interpolate.splprep([self.xdata, self.ydata],
+					    u=self.md_data,
+					    s=0,
+					    k=3)
+	    mds = linspace(min(u), max(u), 5000)
+	    out = interpolate.splev(mds, tcknot)
+	    self.axes.plot(out[0], out[1], '-')
+	    
+	    mds = linspace(self.md_data[x0], self.md_data[-1], 5000)
+	    out = interpolate.splev(mds, tcknot)
+	    
+	    splen = 0.0
+	    for i in arange(0, len(out[0])-1):
+		splen += ((out[0][i+1] - out[0][i])**2.0 + (out[1][i+1] - out[1][i])**2.0) ** 0.5
+	    print "SPLINE_LENGTH", splen
+	    self.axes.plot(out[0], out[1], '-')
+	    print out[0][0], out[0][-1], out[1][0], out[1][-1]
+
+	    print "RATIO", (1-stlen/splen)*1000
+	    print "ANGLE", angle
+	    # the larger the worse
+
+
+	    
+
+
+	#self.axes.plot(self.xdata, self.ydata, '.', color='green')
+
         self.canvas.draw()
 	return
     
@@ -145,16 +279,16 @@ class AppForm(QMainWindow):
         # self.connect(self.textbox, SIGNAL('editingFinished ()'), self.on_draw)
 	# self.connect(self.lspinbox, SIGNAL('valueChanged (double)'), self.on_draw)
         
-        self.draw_button = QPushButton("Hyp Regression")
+        self.draw_button = QPushButton("Sort Alphabetically")
         self.connect(self.draw_button, SIGNAL('clicked()'), self.on_press)
 
-	self.reset_button = QPushButton("Reset Start")
-	self.connect(self.reset_button, SIGNAL('clicked()'), self.on_press)
+	self.reset_button = QPushButton("Sort by Straitness")
+	self.connect(self.reset_button, SIGNAL('clicked()'), self.sort_by_straitness)
 
-	self.bf_sens = QPushButton("B-Factor Sens")
+	self.bf_sens = QPushButton("Sort by X")
 	self.connect(self.bf_sens, SIGNAL('clicked()'), self.on_press)
         
-        self.calc_bf = QCheckBox("Calculate B-Factor")
+        self.calc_bf = QCheckBox("Export Data")
         self.calc_bf.setChecked(False)
         self.connect(self.calc_bf, SIGNAL('stateChanged(int)'), self.on_press)
 
@@ -162,16 +296,15 @@ class AppForm(QMainWindow):
 	self.well_listview = QListView()
 	self.listmodel = QStandardItemModel(self.well_listview)
 
-	self.well_list = ["one", "two", "three"]
 	#self.well_list.sort()
-	for well in self.well_list:
+	for well in well_list:
 	    item = QStandardItem()
 	    item.setText(well)
 	    item.setEditable(False)
 	    self.listmodel.appendRow(item)
 
 	self.well_listview.setModel(self.listmodel)
-	self.connect(self.well_listview, SIGNAL('doubleClicked(QModelIndex)'), self.on_press)
+	self.connect(self.well_listview, SIGNAL('doubleClicked(QModelIndex)'), self.well_selected)
 
         #slider_label = QLabel('Bar width (%):')
         #self.slider = QSlider(Qt.Horizontal)
@@ -260,13 +393,6 @@ class AppForm(QMainWindow):
             action.setCheckable(True)
         return action
 
-
-def main():
-    app = QApplication(sys.argv)
-    form = AppForm()
-    form.show()
-    app.exec_()
-
 def extend_dict(d1, d2):
 
     dnew = {}
@@ -290,19 +416,25 @@ if __name__ == "__main__":
     reader = csv.DictReader(fd)
 
     uwi = 0
+    newuwi = 0
     master_dict = {}
     tmp_dict = {}
+    well_names = {}
+    lastrow = []
 
     for row in reader:
+
 	newuwi = int(row['UWI'])
 
-	if uwi == newuwi:
+	if uwi == newuwi or not uwi:
 	    tmp_dict = extend_dict(tmp_dict, row)
 	    
-	else:
+	elif len(tmp_dict):
+	    well_names[lastrow['Well Name'] + ' ' + lastrow['Well Num']] = uwi
 	    master_dict[uwi] = tmp_dict.copy()
 	    tmp_dict = {}
 
+	lastrow = row
 	uwi = newuwi
 	
 
@@ -311,22 +443,40 @@ if __name__ == "__main__":
 
     for k in master_dict.keys():
 
-	    for j in master_dict[k].keys():
-		try:
-		    if ['Deviation Azimuth',
-			'Deviation E/W',
-			'Deviation N/S',
-			'TV Depth',
-			'Measured Depth',
-			'Deviation Angle',
-			'UWI'].index(j):
-			master_dict[k][j] = map(float, master_dict[k][j])
-		except ValueError:
-		    pass
+	welldata = master_dict[k]
+	# strings to floats
+	for j in master_dict[k].keys():
+	    try:
+		if ['Deviation Azimuth',
+		    'Deviation E/W',
+		    'Deviation N/S',
+		    'TV Depth',
+		    'Measured Depth',
+		    'Deviation Angle',
+		    'UWI'].index(j):
+		    welldata[j] = map(float, welldata[j])
+	    except ValueError:
+		pass
 
-    api = master_dict.keys()[40]
+
+	for i in arange(0, len(welldata['Deviation E/W'])):
+	    if welldata['E/W'][i] == 'W':
+		welldata['Deviation E/W'][i] *= -1
+
+	    if welldata['N/S'][i] == 'S':
+		welldata['Deviation N/S'][i] *= -1
+	    
+	
+    #api = master_dict.keys()[40]
     
-    xdata = master_dict[api]['Deviation N/S']
-    ydata = master_dict[api]['TV Depth']
+    #xdata = master_dict[api]['Deviation N/S']
+    #ydata = master_dict[api]['TV Depth']
 
-    main()
+    well_list = well_names.keys()
+    well_list.sort()
+
+
+    app = QApplication(sys.argv)
+    form = AppForm()
+    form.show()
+    app.exec_()
